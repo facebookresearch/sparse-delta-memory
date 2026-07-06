@@ -1,0 +1,5 @@
+# Development / test dependencies (not needed to train or run SDM).
+# The tests under tests/ are self-contained and also run standalone, e.g.
+#   PYTHONPATH=. python tests/smoke_sdm.py
+# pytest is only needed for the `pytest tests/` collection form.
+pytest

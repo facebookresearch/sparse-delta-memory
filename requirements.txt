@@ -1,0 +1,17 @@
+numpy
+omegaconf
+msgspec
+rouge-score
+sacrebleu
+sentencepiece
+tiktoken
+blobfile
+wandb
+viztracer
+lm-eval
+scipy
+nvidia-ml-py
+datatrove
+orjson
+einops
+triton

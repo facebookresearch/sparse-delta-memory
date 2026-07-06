@@ -1,0 +1,56 @@
+# Attention-only baseline matching sdm_flagship.yaml (same size / recipe, no SDM).
+# Serves as the control for A/B loss comparisons against sdm_flagship.yaml.
+# Change dump_dir, data.root_dir and data.tokenizer.path before launching.
+
+# dump_dir: !!CHANGETHIS!!
+name: "baseline_1280"
+steps: 40000
+seed: 777
+optim:
+    lr: 1.2e-3
+    warmup: 252
+    scheduler: cosine
+    lr_min_ratio: 0.01
+    clip: 1.0
+
+distributed:
+    fsdp_type: full_shard
+    compile: true
+    model_dtype: bf16
+    matmul_allow_tf32: false
+    selective_activation_checkpointing: true
+    tp_size: 1
+
+model:
+    dim: 1280
+    n_layers: 14
+    n_heads: 20
+    n_kv_heads: 10
+    rope_theta: 100000.0
+    attn_at: "all"          # pure-attention control (every layer is full attention)
+
+data:
+    root_dir: data/shuffled
+    sources:
+        dclm_baseline_1.0: 1.0
+    batch_size: 5
+    prefetch_size: 64
+    seq_len: 4096
+    n_views: 2
+    load_async: true
+    tokenizer:
+        name: bytes
+
+profiling:
+    run: false
+
+checkpoint:
+    dump:
+        every: 2520
+        keep: 1
+    eval:
+        every: 10080
+        keep: 1
+
+logging:
+    freq: 10
