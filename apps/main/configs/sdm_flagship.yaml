@@ -33,19 +33,20 @@ model:
     sdm_at: [3, 7, 11, 15, 19, 23]
     swa_at: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22]
     # Sliding-window (local) attention configuration:
-    swa_window: 1024     # local attention window (< seq_len); set to the paper's value
+    swa_window: 128      # local attention window (< seq_len): 128 = the paper's value
     swa_n_heads: 16
     swa_n_kv_heads: 16   # SWA uses MHA
     sdm_args:
-        num_heads: 2
+        num_heads: 2                # head_dim = 2048 / 2 = 1024; key projection 2 x 512 wide
         slots_per_head: 65536   # 256^2 (perfect square, product keys); memory bank = num_heads * slots_per_head
         backprop_on_memory: true    # learned initial memory (parametric memory) — the paper's key setting
-        num_reads: 128
-        num_writes: 128
-        memory_block_size: 256      # kernel speed knob only; does not change results
+        num_reads: 64
+        num_writes: 64
+        chunk_size: 64              # kernel chunk size; changes results only through float rounding
         output_gate: true
         normalize_readings: true
         snapshot_quant: "none"      # set "fp8" or "int4" to cut snapshot activation memory at long context
+        cuda_graph: true            # replay the SDM write/read from CUDA graphs (sparse_delta_memory/README.md)
 
 data:
     root_dir: data/shuffled

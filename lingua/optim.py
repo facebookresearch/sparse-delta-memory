@@ -149,7 +149,7 @@ def build_lr_fn(args: OptimArgs, n_steps: int):
 def build_optimizer(model: nn.Module, args: OptimArgs, n_steps: int):
     logger.info("Starting build of optimizer...")
     # SparseDeltaMemory's gating parameters (A_log, dt_bias) are excluded from
-    # weight decay, matching the original layer. Scope this strictly to SDM modules
+    # weight decay, as in FLA's gated delta-rule layers. Scope this strictly to SDM modules
     # (by module type + parameter identity) so other layers that happen to name
     # parameters A_log/dt_bias — e.g. mamba — are left untouched, and non-SDM runs
     # keep the original single-group behaviour exactly.

@@ -28,24 +28,25 @@ model:
     n_heads: 32          # head_dim = 4096/32 = 128
     n_kv_heads: 16
     rope_theta: 100000.0
-    attn_gate: true      # sigmoid(w_gate(x)) gate on all attention (SWA) outputs, à la amaia_mixatt
+    attn_gate: true      # gated attention: sigmoid(w_gate(x)) gate on all attention (SWA) outputs
     # 3:1 hybrid — SDM every 4th layer, sliding-window attention on the rest. No full attention.
     sdm_at: [3, 7, 11, 15, 19, 23, 27, 31]
     swa_at: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30]
     # Sliding-window (local) attention configuration:
-    swa_window: 1024     # local attention window (< seq_len); set to the paper's value
+    swa_window: 128      # local attention window (< seq_len): 128 = the paper's value
     swa_n_heads: 32
     swa_n_kv_heads: 32   # SWA uses MHA
     sdm_args:
         num_heads: 4
         slots_per_head: 65536   # 256^2 (perfect square, product keys); memory bank = num_heads * slots_per_head
         backprop_on_memory: true    # learned initial memory (parametric memory)
-        num_reads: 128
-        num_writes: 128
-        memory_block_size: 256      # kernel speed knob only; does not change results
+        num_reads: 64
+        num_writes: 64
+        chunk_size: 256             # kernel chunk size; changes results only through float rounding
         output_gate: true
         normalize_readings: true
-        snapshot_quant: "none"      # set "fp8"/"int4" (or use context parallelism) at long context
+        snapshot_quant: "none"      # set "fp8" or "int4" to cut snapshot activation memory at long context
+        cuda_graph: false
 
 data:
     root_dir: data/shuffled

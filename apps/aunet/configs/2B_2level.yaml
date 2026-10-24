@@ -1,4 +1,4 @@
-# python -m lingua.stool script=apps.aunet.train config=apps/aunet/config/2B_2level.yaml nodes=3 account=slurm_account qos=slurm_qos
+# python -m lingua.stool script=apps.aunet.train config=apps/aunet/configs/2B_2level.yaml nodes=3 account=slurm_account qos=slurm_qos
 # dump_dir: !!!CHANGE_THIS!!!
 name: "2B_2levels"
 steps: 300000

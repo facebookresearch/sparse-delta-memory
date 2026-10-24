@@ -1,0 +1,74 @@
+# Sparse-Delta-Memory flagship — 1.4B-scale, 3:1 hybrid: 3 sliding-window-attention (SWA,
+# local) layers per 1 SDM (global memory) layer. SDM's learned initial memory acts as a
+# large parametric memory. A/B control: baseline_1.4B.yaml (identical SWA backbone with the
+# SDM layers replaced by full attention).
+# Change dump_dir, data.root_dir and data.tokenizer.path before launching.
+
+# dump_dir: !!CHANGETHIS!!
+name: "sdm_1.4B"
+steps: 40000
+seed: 777
+optim:
+    lr: 1.2e-3
+    warmup: 252
+    scheduler: cosine
+    lr_min_ratio: 0.01
+    clip: 1.0
+
+distributed:
+    fsdp_type: full_shard
+    compile: true
+    model_dtype: bf16
+    matmul_allow_tf32: false
+    selective_activation_checkpointing: true
+    tp_size: 1
+
+model:
+    dim: 2048
+    n_layers: 24
+    n_heads: 16          # full-attention default heads (head_dim = 2048/16 = 128); unused here (no attn layers)
+    n_kv_heads: 8
+    rope_theta: 100000.0
+    # 3:1 hybrid — SDM every 4th layer, sliding-window attention on the rest. No full attention.
+    sdm_at: [3, 7, 11, 15, 19, 23]
+    swa_at: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22]
+    # Sliding-window (local) attention configuration:
+    swa_window: 1024     # local attention window (< seq_len); set to the paper's value
+    swa_n_heads: 16
+    swa_n_kv_heads: 16   # SWA uses MHA
+    sdm_args:
+        num_heads: 2
+        slots_per_head: 65536   # 256^2 (perfect square, product keys); memory bank = num_heads * slots_per_head
+        backprop_on_memory: true    # learned initial memory (parametric memory) — the paper's key setting
+        num_reads: 128
+        num_writes: 128
+        memory_block_size: 256      # kernel speed knob only; does not change results
+        output_gate: true
+        normalize_readings: true
+        snapshot_quant: "none"      # set "fp8" or "int4" to cut snapshot activation memory at long context
+
+data:
+    root_dir: data/shuffled
+    sources:
+        dclm_baseline_1.0: 1.0
+    batch_size: 4
+    prefetch_size: 64
+    seq_len: 4096
+    n_views: 2
+    load_async: true
+    tokenizer:
+        name: bytes
+
+profiling:
+    run: false
+
+checkpoint:
+    dump:
+        every: 2520
+        keep: 1
+    eval:
+        every: 10080
+        keep: 1
+
+logging:
+    freq: 10

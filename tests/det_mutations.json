@@ -1,0 +1,50 @@
+[
+ {
+  "name": "phase1_pair_atomics",
+  "expect": "DETECTED",
+  "what": "Phase-1 pairs: the pre-ownership parallel walk, one thread per sorted entry adding into A / QK with shared-memory atomicAdd",
+  "targets": [
+   {
+    "path": "sparse_delta_memory/cuda/phase1_cuda.py",
+    "pattern": "trow\\[j\\] = __fadd_rn\\(trow\\[j\\], term\\);",
+    "count": 1,
+    "within": ""
+   }
+  ],
+  "edits": [
+   {
+    "path": "sparse_delta_memory/cuda/phase1_cuda.py",
+    "anchor": "(?s)[ ]*// (?:Phase 2\\. )?Units: \\(row, A\\).*?\\n([ ]*__syncthreads\\(\\);\\n[ ]*\\n[ ]*float\\* tri_a = tri;)",
+    "replacement": "    for (int r = threadIdx.x; r < n; r += blockDim.x) {  // mutation\n        const uint4 own = rec_row[r];\n        uint32_t pp = own.x;\n        const bool q = is_q(pp);\n        if (!(q ? do_qk : do_a && is_k(pp))) continue;\n        const int i = token_of(pp);\n        float* trow = tri + (q ? qk_off : 0) + i * (i + 1) / 2;\n        const float hi = __uint_as_float(own.y), lo = __uint_as_float(own.z);\n        const float v = __uint_as_float(own.w);\n        for (int at = r; !is_head(pp);) {\n            const uint4 rec_e = rec_row[--at];\n            pp = rec_e.x;\n            const int j = token_of(pp);\n            if (is_k(pp) && (q || j != i)) {\n                atomicAdd(trow + j, v * __uint_as_float(rec_e.w) * exp2f(log2_decay(\n                    hi, lo, __uint_as_float(rec_e.y), __uint_as_float(rec_e.z))));\n            }\n        }\n    }\n\\1",
+    "regex": true
+   }
+  ]
+ },
+ {
+  "name": "stats_float_index_add",
+  "expect": "DETECTED",
+  "what": "eval statistics: the slot access weights accumulate with a float index_add_ (atomics) again instead of index_put_(accumulate=True)",
+  "targets": [
+   {
+    "path": "sparse_delta_memory/memory_stats.py",
+    "pattern": "index_put_\\(",
+    "count": 2,
+    "within": ""
+   }
+  ],
+  "edits": [
+   {
+    "path": "sparse_delta_memory/memory_stats.py",
+    "anchor": "(?s)self\\._read_slot_access_weights\\.index_put_\\(\\s*\\(q_idx_flat\\.long\\(\\),\\),\\s*(q_val_flat\\.to\\(self\\._read_slot_access_weights\\.dtype\\)),\\s*accumulate=True\\)",
+    "replacement": "self._read_slot_access_weights.index_add_(0, q_idx_flat.long(), \\1)  # mutation",
+    "regex": true
+   },
+   {
+    "path": "sparse_delta_memory/memory_stats.py",
+    "anchor": "(?s)self\\._write_slot_access_weights\\.index_put_\\(\\s*\\(write_idx_flat\\.long\\(\\),\\),\\s*(write_strength_flat\\.to\\(self\\._write_slot_access_weights\\.dtype\\)),\\s*accumulate=True\\)",
+    "replacement": "self._write_slot_access_weights.index_add_(0, write_idx_flat.long(), \\1)  # mutation",
+    "regex": true
+   }
+  ]
+ }
+]

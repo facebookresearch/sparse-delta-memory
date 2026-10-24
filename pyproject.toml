@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparse-delta-memory"
+dynamic = ["version"]
+description = "Sparse Delta Memory (SDM): a sparse memory layer for language models, with deterministic CUDA kernels"
+readme = "sparse_delta_memory/README.md"
+requires-python = ">=3.12"
+license = "CC-BY-NC-4.0"
+license-files = ["LICENSE"]
+# torch and triton: the versions the kernels were tested with (bitwise results depend on them).
+dependencies = ["torch==2.13.0", "triton==3.7.1", "ninja", "einops"]
+keywords = ["sparse memory", "language models", "sequence mixer", "CUDA", "deterministic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Repository = "https://github.com/facebookresearch/sparse-delta-memory"
+Changelog = "https://github.com/facebookresearch/sparse-delta-memory/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+version = {attr = "sparse_delta_memory.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["sparse_delta_memory", "sparse_delta_memory.*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"sparse_delta_memory.cuda" = ["*.cuh"]

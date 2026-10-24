@@ -1,6 +1,6 @@
 # Template config, need to change dump_dir, data.root_dir and tokenizer.path
 # Evals can be activated by uncommenting its config
-# python -m lingua.stool config=apps/main/configs/debug.yaml nodes=8 account=<your_slurm_account> qos=lowest
+# python -m lingua.stool script=apps.fastRNN.train config=apps/fastRNN/hawk/configs/hawk_1b.yaml nodes=8 account=<your_slurm_account> qos=lowest
 
 # dump_dir: !!CHANGETHIS!!
 name: "1b_Hawk"

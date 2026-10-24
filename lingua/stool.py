@@ -78,6 +78,7 @@ def copy_dir(input_dir: str, output_dir: str) -> None:
         f"rsync -arm --copy-links "
         f"--include '**/' "
         f"--include '*.py' "
+        f"--include '*.cuh' "
         f"--exclude='*' "
         f"{input_dir}/ {output_dir}"
     )

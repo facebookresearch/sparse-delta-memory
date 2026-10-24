@@ -1,4 +1,4 @@
-#python -m lingua.stool config=apps/main/configs/llama2_7B.yaml nodes=32 account=<your_slurm_account> qos=lowest
+#python -m lingua.stool config=apps/main/configs/llama_7B.yaml nodes=32 account=<your_slurm_account> qos=lowest
 # dump_dir: !!!CHANGE_THIS!!!
 name: "7b_baseline"
 steps: 100_000

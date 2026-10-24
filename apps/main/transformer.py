@@ -92,6 +92,10 @@ class LMTransformerArgs(BaseTransformerArgs):
     vocab_size: int = -1
     weight_tying: bool = False
 
+    # Output gate on the full-attention ("attn") layers only: sigmoid(w_gate(x)) * output
+    # before wo, as attn_gate applies to every attention layer (full and sliding-window).
+    full_attn_gate: bool = False
+
 
 class LMTransformer(BaseTransformer):
     def __init__(self, args: LMTransformerArgs):
@@ -113,6 +117,13 @@ class LMTransformer(BaseTransformer):
 
         super().__init__(args)
         self.weight_tying = args.weight_tying
+        if args.full_attn_gate:
+            for layer in self.layers:
+                attn = layer.attention
+                if layer.attn_type == "attn" and not attn.attn_gate:
+                    attn.attn_gate = True
+                    attn.w_gate = torch.nn.Linear(args.dim, attn.n_heads * attn.head_dim,
+                                                  bias=False)
 
         self.swa_window = args.swa_window
         self.has_swa = "swa" in self.layer_types
@@ -263,7 +274,7 @@ def tp_parallelize(model, tp_mesh, model_args: LMTransformerArgs, distributed_ar
         layer_plan["attention.wk"] = ColwiseParallel()
         layer_plan["attention.wv"] = ColwiseParallel()
         layer_plan["attention.wo"] = RowwiseParallel(output_layouts=Shard(1))
-        if getattr(model_args, "attn_gate", False):
+        if getattr(layer.attention, "attn_gate", False):  # attn_gate or full_attn_gate
             # Gate output is n_heads*head_dim (like wq) — shard colwise to match the
             # sharded pre-wo attention output.
             layer_plan["attention.w_gate"] = ColwiseParallel()

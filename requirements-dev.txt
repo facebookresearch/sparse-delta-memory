@@ -1,5 +1,7 @@
 # Development / test dependencies (not needed to train or run SDM).
-# The tests under tests/ are self-contained and also run standalone, e.g.
-#   PYTHONPATH=. python tests/smoke_sdm.py
-# pytest is only needed for the `pytest tests/` collection form.
+# The full suite runs with `pytest tests/`; tests/smoke_sdm.py and tests/test_layer_types.py
+# also run standalone without pytest.
 pytest
+numpy
+# Optional: the GatedDeltaNet arms of benchmarks/ (tested with flash-linear-attention 0.5.0).
+# flash-linear-attention

@@ -65,6 +65,7 @@ from apps.main.transformer import (
     get_no_recompute_ops,
 )
 from lingua.probe import AutoProbeD
+from sparse_delta_memory import suspend_cuda_graphs
 from lingua.stool import StoolArgs, launch_job
 
 import wandb
@@ -397,7 +398,9 @@ def train(args: TrainArgs):
                     next(model.parameters()).grad is None
                 ), "Can't probe model if grads are not reset"
 
-                with probe:
+                # The probe runs at a smaller shape than the training step: SDM layers run it
+                # eager and keep their CUDA graphs (cuda_graph) for the step itself.
+                with probe, suspend_cuda_graphs():
                     probe.metadata = {
                         "it": train_state.step,
                         "global_step": train_state.step,

@@ -15,7 +15,7 @@ from torch.nn.attention.flex_attention import (
 )
 
 from lingua import probe
-from lingua.sparse_delta_memory import SparseDeltaMemory, SparseDeltaMemoryArgs
+from sparse_delta_memory import SparseDeltaMemory, SparseDeltaMemoryArgs
 
 flex_attention_comp = torch.compile(flex_attention)
 
@@ -484,7 +484,7 @@ class Attention(nn.Module):
             bias=False,
         )
 
-        # Attention output gating (as in AMAIA mixed-attention): sigmoid(w_gate(x)) applied
+        # Attention output gating (gated attention): sigmoid(w_gate(x)) applied
         # elementwise to the head-mixed attention output before the output projection. Off
         # by default; enabled per-model via BaseTransformerArgs.attn_gate.
         self.attn_gate = attn_gate

@@ -27,6 +27,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper,
 )
 from torch.utils.checkpoint import (
+    SAC_IGNORED_OPS,
     create_selective_checkpoint_contexts,
     CheckpointPolicy,
 )
@@ -51,6 +52,14 @@ default_no_recompute_ops = {
 with contextlib.suppress(AttributeError):  # ignore exception if op is missing (old xFormers)
     default_no_recompute_ops.add(torch.ops.xformers.efficient_attention_forward_cutlass.default)
     default_no_recompute_ops.add(torch.ops.xformers_flash3.flash_fwd.default)
+
+# FSDP's profiler ranges can run a different number of times in the forward and in the
+# recompute (torch >= 2.13); they carry no tensors, so keep them out of the SAC bookkeeping.
+SAC_IGNORED_OPS.update({
+    torch.ops.profiler._record_function_enter.default,
+    torch.ops.profiler._record_function_enter_new.default,
+    torch.ops.profiler._record_function_exit._RecordFunction,
+})
 
 
 @dataclass

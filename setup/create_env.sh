@@ -28,20 +28,19 @@ env_prefix=lingua_$current_date
 # Fall back to the active conda base if CONDA_ROOT is not exported (e.g. on a login node).
 CONDA_ROOT="${CONDA_ROOT:-$(conda info --base 2>/dev/null)}"
 source "$CONDA_ROOT/etc/profile.d/conda.sh"
-conda create -n $env_prefix python=3.11 -y -c anaconda
+conda create -n $env_prefix python=3.12 -y -c anaconda
 conda activate $env_prefix
 
 echo "Currently in env $(which python)"
 
 # Install packages.
-# IMPORTANT: SDM's Triton kernels use bf16 atomic_add, which requires triton >= 3.4.
-# That ships with torch 2.8 — torch 2.7 bundles triton 3.3 and the kernels fail to compile.
-pip install torch==2.8.0 xformers
-pip install ninja
+# The versions the SDM kernels were tested with: Python 3.12, torch 2.13.0 built for CUDA 13.0
+# (it brings triton 3.7.1) and xformers 0.0.35 (installed after the CUDA toolkit, below).
+pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
 pip install --requirement requirements.txt
 
 # CUDA toolkit (nvcc + cudart + libs) matching torch's CUDA build, for JIT kernel
-# compilation via torch.utils.cpp_extension.load_inline. Requires an SM80+ GPU at runtime.
+# compilation via torch.utils.cpp_extension.load. The kernels were tested on sm_103 (GB300) and sm_90 (H100).
 #
 # NOTE: cuda-nvcc pulls in a conda cross-compiler (gxx_linux-64) as a dependency. On some
 # channel combinations an old build's post-link script emits a benign nonzero warning
@@ -75,6 +74,15 @@ cat > "$CONDA_PREFIX/etc/conda/activate.d/zz_sdm_build_env.sh" <<'EOF'
 if [ -x /usr/bin/g++ ]; then export CC=/usr/bin/gcc CXX=/usr/bin/g++ CUDAHOSTCXX=/usr/bin/g++; fi
 export LIBRARY_PATH="${CONDA_PREFIX}/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
 EOF
+
+# xformers 0.0.35: the CUDA 13.0 index has prebuilt wheels for x86_64 only. On aarch64 (for example
+# GB300 Grace nodes) pip compiles it from source against torch and the toolkit above (slow).
+if [ "$(uname -m)" = x86_64 ]; then
+    pip install xformers==0.0.35 --index-url https://download.pytorch.org/whl/cu130
+else
+    source "$CONDA_PREFIX/etc/conda/activate.d/zz_sdm_build_env.sh"
+    pip install --no-build-isolation xformers==0.0.35
+fi
 
 # End timer
 end_time=$(date +%s)

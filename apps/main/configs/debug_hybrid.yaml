@@ -41,16 +41,17 @@ model:
     swa_n_kv_heads: 2      # GQA on the SWA layers
     swa_head_dim: 64       # different head_dim -> its own RoPE table
     sdm_args:
-        slots_per_head: 4096    # perfect square (64^2); total = slots_per_head * num_heads^2
+        slots_per_head: 4096    # perfect square (64^2); memory bank = num_heads * slots_per_head
         num_heads: 1
         num_reads: 32
         num_writes: 32
-        memory_block_size: 64
+        chunk_size: 64
         output_gate: true
         backprop_on_memory: false
         read_act: Softmax
         write_act: Softmax
         snapshot_quant: "none"
+        cuda_graph: true        # replay the SDM write/read from CUDA graphs (sparse_delta_memory/README.md)
 
 data:
     root_dir: data/shuffled

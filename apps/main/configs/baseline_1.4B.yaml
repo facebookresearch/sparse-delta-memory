@@ -28,11 +28,12 @@ model:
     n_heads: 16          # full-attention (global) layers: 16 query heads, head_dim = 128
     n_kv_heads: 8        # GQA 2:1 on the global full-attention layers
     rope_theta: 100000.0
+    full_attn_gate: true # gated attention on the full-attention (global) layers: sigmoid(w_gate(x)) * output, as in the paper
     # 3:1 hybrid — full (global) attention every 4th layer, sliding-window attention on the rest.
     attn_at: [3, 7, 11, 15, 19, 23]
     swa_at: [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22]
     # Sliding-window (local) attention configuration (identical to sdm_flagship.yaml):
-    swa_window: 1024
+    swa_window: 128      # local attention window (< seq_len): 128 = the paper's value
     swa_n_heads: 16
     swa_n_kv_heads: 16   # SWA uses MHA
 

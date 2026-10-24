@@ -3,3 +3,8 @@
 *.ipynb
 slurm-*.out
 wandb
+/results/
+# python -m build / pip install . outputs
+build/
+dist/
+*.egg-info/

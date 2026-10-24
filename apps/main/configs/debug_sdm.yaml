@@ -1,8 +1,8 @@
 # Template config for a small Sparse-Delta-Memory (SDM) debug run.
 # Change dump_dir, data.root_dir and data.tokenizer.path before launching.
 #
-# SDM replaces attention at the layers listed in model.sdm_args.layers; the
-# remaining layers use standard attention (a hybrid, as in the paper).
+# SDM replaces attention at the layers listed in model.sdm_at; the remaining
+# layers (model.attn_at) use standard attention (a hybrid, as in the paper).
 
 # dump_dir: !!CHANGETHIS!!
 name: "debug_sdm"
@@ -31,16 +31,17 @@ model:
     attn_at: [0, 2, 4, 6]   # standard attention
     sdm_at: [1, 3, 5, 7]    # Sparse-Delta-Memory
     sdm_args:
-        slots_per_head: 4096    # perfect square (64^2); total = slots_per_head * num_heads^2
+        slots_per_head: 4096    # perfect square (64^2); memory bank = num_heads * slots_per_head
         num_heads: 1
         num_reads: 32
         num_writes: 32
-        memory_block_size: 64
+        chunk_size: 64
         output_gate: true
         backprop_on_memory: false
         read_act: Softmax
         write_act: Softmax
         snapshot_quant: "none"
+        cuda_graph: true        # replay the SDM write/read from CUDA graphs (sparse_delta_memory/README.md)
 
 data:
     root_dir: data/shuffled

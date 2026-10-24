@@ -13,7 +13,7 @@ This repository contains the official implementation of AU-Nets. For details, re
 AU-Net is implemented as an app inside the Lingua framework. You can launch it the same way as other Lingua apps:
 
 ```bash
-python -m lingua.stool script=apps.aunet.train config=apps/aunet/config/relevent_config.yaml nodes=<num_node> account=<slurm_account> qos=<slurm_qos>
+python -m lingua.stool script=apps.aunet.train config=apps/aunet/configs/<config>.yaml nodes=<num_node> account=<slurm_account> qos=<slurm_qos>
 ```
 
 Different configurations corresponding to different network sizes and architectures can be found in `apps/aunet/configs`.

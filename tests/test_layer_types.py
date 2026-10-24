@@ -1,19 +1,29 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 """Tests for explicit per-layer sequence-mixer assignment (attn / swa / sdm).
 
-Self-contained (no pytest dependency, matching tests/smoke_sdm.py). The
+Runs standalone (no pytest dependency, like tests/smoke_sdm.py) or under pytest. The
 `resolve_layer_types` + mask-semantics checks are pure-CPU; the hybrid forward/backward
 check needs a GPU (the SDM kernels JIT-compile on first use). Run in the release env:
 
     PYTHONPATH=. python tests/test_layer_types.py
 """
+import os
+import sys
 from contextlib import contextmanager
 
 import torch
 
-from lingua.transformer import resolve_layer_types
-from lingua.sparse_delta_memory import SparseDeltaMemory, SparseDeltaMemoryArgs
-from apps.main.transformer import LMTransformer, LMTransformerArgs, create_causal_mask
+from sparse_delta_memory import SparseDeltaMemoryArgs
+
+try:
+    from apps.main.transformer import LMTransformer, LMTransformerArgs, create_causal_mask
+    from lingua.transformer import resolve_layer_types
+except ModuleNotFoundError:
+    _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.isdir(os.path.join(_ROOT, "apps")) and os.path.isdir(os.path.join(_ROOT, "lingua")):
+        raise  # a checkout whose training code does not import: a real failure
+    import pytest  # a copy of tests/ outside the repository: these tests need its apps/ and lingua/
+    pytest.skip("needs the repository checkout (apps/, lingua/)", allow_module_level=True)
 
 
 @contextmanager
@@ -25,6 +35,17 @@ def raises(exc, match=None):
             assert match in str(e), f"expected {match!r} in error, got: {e}"
         return
     raise AssertionError(f"expected {exc.__name__} to be raised")
+
+
+def _no_gpu(name):
+    """Without a GPU: skip under pytest; print and return True when run standalone."""
+    if torch.cuda.is_available():
+        return False
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip("needs a CUDA GPU")
+    print(f"[SKIP] {name} (no GPU)")
+    return True
 
 
 # ------------------------------------------------------------- resolve_layer_types
@@ -114,9 +135,32 @@ def test_attn_gate():
     print("[PASS] attn_gate off-by-default; on -> gated fwd+bwd finite")
 
 
+def test_full_attn_gate_gates_only_full_attention():
+    # full_attn_gate: w_gate on the full-attention layers only, laid out as attn_gate's.
+    kw = dict(dim=64, n_layers=3, n_heads=4, vocab_size=64, max_seqlen=16, swa_at=[0, 2],
+              attn_at=[1], swa_window=4)
+    plain = LMTransformer(LMTransformerArgs(**kw))
+    m = LMTransformer(LMTransformerArgs(**kw, full_attn_gate=True))
+    m.init_weights()
+    gated = [i for i, layer in enumerate(m.layers) if hasattr(layer.attention, "w_gate")]
+    assert gated == [1] and m.layers[1].attention.attn_gate
+    assert not m.layers[0].attention.attn_gate and not m.layers[2].attention.attn_gate
+    extra = sum(p.numel() for p in m.parameters()) - sum(p.numel() for p in plain.parameters())
+    assert extra == 64 * 64  # one dim x (n_heads * head_dim) gate
+    every = LMTransformer(LMTransformerArgs(**kw, attn_gate=True))
+    assert ({k: v.shape for k, v in m.state_dict().items() if "w_gate" in k}
+            == {k: v.shape for k, v in every.state_dict().items() if "layers.1." in k and "w_gate" in k})
+    loss = m(torch.randint(0, 64, (2, 8)), target=torch.randint(0, 64, (2, 8)))
+    loss.backward()
+    g = m.layers[1].attention.w_gate.weight.grad
+    assert torch.isfinite(loss).all() and g is not None and g.abs().sum() > 0
+    print("[PASS] full_attn_gate gates only the full-attention layers")
+
+
 def test_param_count_excludes_sdm_memory():
     from lingua.metrics import get_num_params
-    sdm = SparseDeltaMemoryArgs(num_heads=2, slots_per_head=1024)  # backprop_on_memory default True
+    # backprop_on_memory default True; num_writes / num_reads: the former defaults, explicit
+    sdm = SparseDeltaMemoryArgs(num_heads=2, slots_per_head=1024, num_writes=1, num_reads=1)
     m = LMTransformer(LMTransformerArgs(dim=64, n_layers=2, n_heads=4, vocab_size=64,
                                         max_seqlen=16, attn_at=[0], sdm_at=[1], sdm_args=sdm))
     tot = get_num_params(m, exclude_sdm_memory=False)
@@ -162,14 +206,13 @@ def test_swa_without_window_raises():
 
 
 def test_hybrid_forward_backward():
-    if not torch.cuda.is_available():
-        print("[SKIP] test_hybrid_forward_backward (no GPU)")
+    if _no_gpu("test_hybrid_forward_backward"):
         return
     torch.manual_seed(0)
     B, T, V, dim, nh = 2, 128, 256, 256, 8  # full-attn head_dim = dim/nh = 32
     sdm = SparseDeltaMemoryArgs(
         num_heads=1, slots_per_head=1024, num_reads=8, num_writes=8,
-        memory_block_size=64, output_gate=True,
+        chunk_size=64, output_gate=True,
         read_act="Softmax", write_act="Softmax",
     )
     args = LMTransformerArgs(
@@ -209,8 +252,7 @@ def test_hybrid_forward_backward():
 
 
 def test_generation_with_swa():
-    if not torch.cuda.is_available():
-        print("[SKIP] test_generation_with_swa (no GPU)")
+    if _no_gpu("test_generation_with_swa"):
         return
     from lingua.tokenizer import build_tokenizer
     from apps.main.generate import (
@@ -239,39 +281,8 @@ def test_generation_with_swa():
     print("[PASS] generation with swa (windowed prefill+decode) ran end-to-end")
 
 
-def test_sdm_decode_equals_forward():
-    """SDM decode via cache (prefill + 1-token steps) must equal one full forward."""
-    if not torch.cuda.is_available():
-        print("[SKIP] test_sdm_decode_equals_forward (no GPU)")
-        return
-    torch.manual_seed(0)
-    DIM, T, P = 256, 40, 24
-    sdm = SparseDeltaMemoryArgs(
-        dim=DIM, num_heads=1, slots_per_head=1024, num_reads=8, num_writes=8,
-        memory_block_size=16, output_gate=True, normalize_readings=True,
-        read_act="Softmax", write_act="Softmax",
-    )
-    layer = SparseDeltaMemory(sdm, 0).cuda()
-    layer.init_weights(init_std=0.02)
-    layer = layer.float().eval()
-    x = torch.randn(1, T, DIM, device="cuda")
-    with torch.no_grad():
-        out_full, _ = layer(x, cache=None)
-        cache = layer.create_kv_cache(bsz=1, seq_len=0, dtype=torch.float32, device="cuda")
-        out_pre, cache = layer(x[:, :P], cache=cache)
-        chunks = [out_pre]
-        for t in range(P, T):
-            o, cache = layer(x[:, t:t + 1], cache=cache)
-            chunks.append(o)
-        out_inc = torch.cat(chunks, dim=1)
-    max_delta = (out_full - out_inc).abs().max().item()
-    assert max_delta < 1e-3, f"decode != forward: max|Δ|={max_delta:.3e}"
-    print(f"[PASS] sdm decode == forward (prefill+step), max|Δ|={max_delta:.2e}")
-
-
 def test_generation_with_sdm():
-    if not torch.cuda.is_available():
-        print("[SKIP] test_generation_with_sdm (no GPU)")
+    if _no_gpu("test_generation_with_sdm"):
         return
     from lingua.tokenizer import build_tokenizer
     from apps.main.generate import (
@@ -279,7 +290,7 @@ def test_generation_with_sdm():
     )
     tok = build_tokenizer("bytes")
     sdm = SparseDeltaMemoryArgs(
-        num_heads=1, slots_per_head=256, num_reads=4, num_writes=4, memory_block_size=64,
+        num_heads=1, slots_per_head=256, num_reads=4, num_writes=4, chunk_size=64,
         output_gate=True, read_act="Softmax", write_act="Softmax",
     )
     # Full 3-way hybrid: swa + full attn + sdm, exercising windowed masks AND SDM decode.

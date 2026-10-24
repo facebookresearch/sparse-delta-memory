@@ -1,0 +1,7 @@
+# The source distribution: the package (with its README and CUDA header), its tests (the ones that
+# need this repository's training code skip outside a checkout), the license and the changelog.
+graft sparse_delta_memory
+graft tests
+include LICENSE CHANGELOG.md requirements-dev.txt
+global-exclude *.py[cod] *.so *.o
+prune **/__pycache__

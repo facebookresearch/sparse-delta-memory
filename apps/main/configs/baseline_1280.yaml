@@ -1,5 +1,6 @@
-# Attention-only baseline matching sdm_flagship.yaml (same size / recipe, no SDM).
-# Serves as the control for A/B loss comparisons against sdm_flagship.yaml.
+# Small attention-only baseline: dim 1280, 14 layers, every layer full causal attention
+# (no SWA, no SDM). This is NOT an iso-backbone control for sdm_flagship.yaml (different
+# width, depth and layer mix); use baseline_1.4B.yaml for that A/B comparison.
 # Change dump_dir, data.root_dir and data.tokenizer.path before launching.
 
 # dump_dir: !!CHANGETHIS!!

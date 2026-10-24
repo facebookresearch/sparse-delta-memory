@@ -1,6 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+from collections import Counter
+from contextlib import nullcontext
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 import time
 from typing import List, Optional
@@ -28,8 +31,11 @@ from lingua.transformer import (
     lengths_to_local_ids,
     lengths_to_start_ids,
 )
-from lingua.sparse_delta_memory import SparseDeltaMemory
+from sparse_delta_memory import SparseDeltaMemory
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import create_block_mask
+
+logger = logging.getLogger(__name__)
 
 
 def sample_top_p(probs: torch.Tensor, p: float) -> torch.Tensor:
@@ -126,6 +132,80 @@ class KVCache(nn.Module):
         return self.k_cache, self.v_cache
 
 
+def _decode_settings():
+    """The global settings that a captured decode step bakes in: matmul precision and the
+    enabled attention backends."""
+    b = torch.backends
+    return (b.cuda.matmul.allow_tf32, b.cuda.matmul.allow_bf16_reduced_precision_reduction,
+            b.cudnn.allow_tf32, b.cuda.flash_sdp_enabled(), b.cuda.mem_efficient_sdp_enabled(),
+            b.cuda.math_sdp_enabled(), b.cuda.cudnn_sdp_enabled())
+
+
+class _DecodeGraph:
+    """The decode step of an SDM model, replayed from one CUDA graph.
+
+    SDM models are generated one prompt at a time, so every decode step has the same shapes,
+    and the generator keeps the tensors a step reads or updates (KV caches and their offset,
+    SDM banks, position and document ids) at fixed addresses across prompts. The first step
+    runs eager on a side stream (it builds kernels and lazy state); the next one is captured
+    and every later step copies its token in and replays. The step is captured again when
+    one of those tensors or a parameter or buffer of the model has another address, shape,
+    stride or dtype, or a setting of ``_decode_settings`` has changed (``layout``, taken with
+    the autocast state once per prompt: neither may change while a prompt is generated).
+    Prompts under autocast run eager, and when a capture fails, decoding stays eager.
+    """
+
+    def __init__(self):
+        self.graph = self.key = self.static_token = self.static_out = None
+        self.warm = self.failed = False
+        self.stats = Counter()
+
+    def step(self, fn, token, layout, sdm_states):
+        if self.failed or layout[1]:  # autocast
+            self.stats["eager"] += 1
+            return fn(token)
+        if not self.warm:
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):
+                out = fn(token)
+            torch.cuda.current_stream().wait_stream(side)
+            self.warm = True
+            self.stats["eager"] += 1
+            return out
+        if layout is not self.key:  # a new prompt: its layout is compared once
+            if self.graph is None or layout != self.key:
+                if not self._capture(fn, token, sdm_states):
+                    self.stats["eager"] += 1
+                    return fn(token)
+            self.key = layout
+        self.static_token.copy_(token)
+        self.graph.replay()
+        for state in sdm_states:  # the replayed step does not run the Python bookkeeping
+            state._cache_len += 1
+        self.stats["replay"] += 1
+        return self.static_out
+
+    def _capture(self, fn, token, sdm_states):
+        lengths = [state._cache_len for state in sdm_states]
+        self.graph = None
+        try:
+            self.static_token, graph = token.clone(), torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):  # records the step; nothing runs until a replay
+                self.static_out = fn(self.static_token)
+        except Exception as exc:
+            self.failed, self.graph = True, None
+            logger.warning("Capturing the SDM decode step failed (%s: %s); decoding runs "
+                           "eager.", type(exc).__name__, exc)
+            return False
+        finally:
+            for state, n in zip(sdm_states, lengths):
+                state._cache_len = n
+        self.graph = graph
+        self.stats["capture"] += 1
+        return True
+
+
 @dataclass
 class PackedCausalTransformerGeneratorArgs:
     temperature: float = 0.0
@@ -137,6 +217,11 @@ class PackedCausalTransformerGeneratorArgs:
     until: List[str] = field(default_factory=list)
     compile_prefilling: bool = False
     reduce_generation_overhead: bool = False
+    # SDM models: replay the single-token decode step from a CUDA graph (see _DecodeGraph).
+    sdm_decode_cuda_graph: bool = True
+    # Decode attention on the memory-efficient SDPA kernel, math as the fallback, instead of PyTorch's choice: the
+    # decode is then bitwise repeatable on H100 (PyTorch's cuDNN attention kernel there is not), but slower.
+    deterministic_attention: bool = False
     show_progress: bool = False
     dtype: Optional[str] = "bf16"
     device: Optional[str] = "cuda"
@@ -188,10 +273,17 @@ class PackedCausalTransformerGenerator:
         self.until = cfg.until
         self.max_until_size = max([len(e) for e in self.until]) if self.until else 1
         self.device = cfg.device
+        self.deterministic_attention = cfg.deterministic_attention
 
-        # Compile if necessary. SDM's custom autograd/Triton kernels + CUDA-graph decode
-        # (reduce-overhead) are fragile together, so compilation is disabled for SDM models
-        # (eager decode is correct; the throughput-optimized path is a fast-follow).
+        # Compile if necessary. The SDM layer updates its cache in place, which this
+        # generator's reduce-overhead (CUDA-graph) compilation does not support, so
+        # compilation is disabled for SDM models; their decode step replays a CUDA graph of
+        # its own instead (sdm_decode_cuda_graph).
+        self.decode_graph = (
+            _DecodeGraph() if self.has_sdm and cfg.sdm_decode_cuda_graph else None
+        )
+        self._sdm_states = {}  # per SDM layer, the decode state reused across prompts
+        self._static = {}  # per-prompt index tensors kept at fixed addresses for the graph
         self.prefill = torch.compile(
             self.prefill, disable=not cfg.compile_prefilling or self.has_sdm
         )
@@ -227,9 +319,62 @@ class PackedCausalTransformerGenerator:
                 # Fresh per-prompt decode state: memory bank reset to the learned initial
                 # memory. The block threads this cache (as `_gen_cache`) through prefill
                 # and each decode step. (SDM is generated one prompt at a time, so bsz=1.)
-                module._gen_cache = module.create_kv_cache(
-                    bsz=1, seq_len=0, dtype=self.dtype, device=self.device
-                )
+                module._gen_cache = self._sdm_state(module)
+
+    def _sdm_state(self, module):
+        """A decode state at the layer's initial bank. With a decode graph the same state,
+        reset in place, serves every prompt: the graph reads its bank at a fixed address."""
+        fresh = module.create_kv_cache(bsz=1, seq_len=0, dtype=self.dtype, device=self.device)
+        if self.decode_graph is None:
+            return fresh
+        state = self._sdm_states.get(module)
+        if state is None or state.memory.shape != fresh.memory.shape or (
+                state.memory.dtype != fresh.memory.dtype):
+            state = self._sdm_states[module] = fresh
+        else:
+            state.memory.copy_(fresh.memory)
+            state._cache_len = 0
+        return state
+
+    def _persistent(self, name, value):
+        """``value`` itself, or with a decode graph a tensor kept across prompts that holds a
+        copy of it (the graph reads fixed addresses)."""
+        if self.decode_graph is None:
+            return value
+        t = self._static.get(name)
+        if t is None or t.shape != value.shape or t.dtype != value.dtype or (
+                t.device != value.device):
+            t = self._static[name] = value.clone()
+        else:
+            t.copy_(value)
+        return t
+
+    def _decode_tensors(self):
+        """The layout: the ``_decode_settings``, the autocast state and the address, shape,
+        stride and dtype of every tensor the decode step reads or updates (parameters and
+        buffers, KV caches and their offset, SDM banks, position and document ids); and the SDM
+        decode states."""
+        tensors = [self.current_tok_id, self.current_doc_id, self.padded_doc_id,
+                   self.padded_tok_id, *self.model.parameters(), *self.model.buffers()]
+        states = []
+        for module in self.model.modules():
+            if isinstance(module, Attention):
+                tensors.append(module.kv_cache.offset)
+            elif isinstance(module, SparseDeltaMemory):
+                states.append(module._gen_cache)
+                tensors.append(module._gen_cache.memory)
+        layout = (_decode_settings(), torch.is_autocast_enabled("cuda"),
+                  tuple((t.data_ptr(), t.shape, t.stride(), t.dtype) for t in tensors))
+        return layout, states
+
+    def decode_step(self, current_token, decode_tensors=None):
+        """``generate_next_token``, replayed from the decode graph when there is one and the
+        step fits it (one sequence). ``decode_tensors`` is ``_decode_tensors()`` taken after
+        this prompt's prefill (by default, taken now)."""
+        if self.decode_graph is None or tuple(current_token.shape) != (1, 1):
+            return self.generate_next_token(current_token)
+        layout, states = decode_tensors or self._decode_tensors()
+        return self.decode_graph.step(self.generate_next_token, current_token, layout, states)
 
     @torch.compiler.disable
     def setup_prefilling(self, lengths: torch.Tensor):
@@ -307,20 +452,25 @@ class PackedCausalTransformerGenerator:
         #               ab---123---               ab---123---
         # padded_doc_id 00000111111 padded_tok_id 01234012345
         # This will later be useful for the attention mask at generation
-        self.padded_doc_id, self.padded_tok_id = lengths_to_local_ids(padded_lengths)
+        padded_doc_id, padded_tok_id = lengths_to_local_ids(padded_lengths)
+        self.padded_doc_id = self._persistent("padded_doc_id", padded_doc_id)
+        self.padded_tok_id = self._persistent("padded_tok_id", padded_tok_id)
 
     @torch.compiler.disable
     def setup_generation(self, lengths):
         # KV Cache offset is set to the start of the padded documents
+        offset = self._persistent("kv_offset", self.padded_doc_start)
         for module in self.model.modules():
             if isinstance(module, Attention):
-                module.kv_cache.offset = self.padded_doc_start
+                module.kv_cache.offset = offset
         # The token ids during generations correspond to the lengths of each doc
         # current_tok_id will be incremented during generation
-        self.current_tok_id = lengths.clone()
+        self.current_tok_id = self._persistent("current_tok_id", lengths.clone())
         # Since we're generating one token per document
         # the document id is just an arange
-        self.current_doc_id = torch.arange(lengths.size(0), device=lengths.device)
+        self.current_doc_id = self._persistent(
+            "current_doc_id", torch.arange(lengths.size(0), device=lengths.device)
+        )
 
     # From here on some methods for generation
     def prefill(self, tokens: torch.Tensor, lengths: torch.Tensor):
@@ -356,12 +506,19 @@ class PackedCausalTransformerGenerator:
                 self.current_tok_id.unsqueeze(1) - self.padded_tok_id.unsqueeze(0)
             ) < self.swa_window
             mask = {"attn": mask, "swa": mask & within_window}
-        out = self.model.forward(
-            current_token,
-            tok_idx=self.current_tok_id,  # n_seqs
-            mask=mask,
-            attn_impl="sdpa",
-        )
+        # deterministic_attention: PyTorch's backend switches are process-wide, so during a decode step they also apply
+        # to other threads' SDPA calls (the generator decodes on one thread).
+        if self.deterministic_attention:
+            attention = sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH], set_priority=True)
+        else:
+            attention = nullcontext()
+        with attention:
+            out = self.model.forward(
+                current_token,
+                tok_idx=self.current_tok_id,  # n_seqs
+                mask=mask,
+                attn_impl="sdpa",
+            )
         self.current_tok_id += 1
         return out
 
@@ -415,9 +572,12 @@ class PackedCausalTransformerGenerator:
                     generated_tokens[seq_id].append(tok)
 
                 current_token = start_token
+                decode_tensors = (
+                    self._decode_tensors() if self.decode_graph is not None else None
+                )
                 for i in range(1, self.max_gen_len):
 
-                    next_logits = self.generate_next_token(current_token)
+                    next_logits = self.decode_step(current_token, decode_tensors)
                     next_token = sample_tokens(
                         next_logits.clone(), self.temperature, self.top_p, self.top_k
                     )
